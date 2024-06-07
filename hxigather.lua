@@ -373,7 +373,7 @@ end);
 windower.register_event('incoming text',
                         function(original, modified, original_mode,
                                  modified_mode, blocked)
-    if (original_mode == 142 or original_mode == 9) then
+    if (original_mode == 142 or original_mode == 9 or original_mode == 121) then
         local dig_diff = os.time() - hxigather.last_attempt
         local message = string.lower(original);
         message = string.strip_colors(message);
@@ -480,7 +480,7 @@ windower.register_event('prerender', function()
     if (hxigather.settings.digging.skillup_display[1]) then
         -- Only show skillup line if one was seen during session
         if (hxigather.digging.dig_skillup ~= 0.0) then
-            output_text = output_text .. '\nSkillups: ' +
+            output_text = output_text .. '\nSkillups: ' ..
                               hxigather.digging.dig_skillup;
         end
     end
