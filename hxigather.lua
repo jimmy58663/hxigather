@@ -26,7 +26,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --]] _addon.name = 'hxigather';
 _addon.author = 'jimmy58663';
-_addon.version = '0.0.1';
+_addon.version = '0.0.3';
 -- _addon.desc      = 'HorizonXI chocobo digging tracker addon.';
 -- _addon.link      = 'https://github.com/jimmy58663/HXIGather';
 _addon.commands = {'hxigather'};
@@ -56,11 +56,6 @@ local default_settings = T {
         skillup_display = T {true}
     },
     reset_on_load = T {false},
-    first_attempt = 0,
-    rewards = T {},
-    -- Save dig items/tries across sessions for fatigue tracking
-    dig_items = 0,
-    dig_tries = 0,
 
     -- Text object display settings
     display = {
@@ -105,7 +100,13 @@ local hxigather = T {
         dig_index = 1,
         dig_per_minute = 0,
         dig_skillup = 0.0
-    }
+    },
+
+    first_attempt = 0,
+    rewards = T {},
+    -- Save dig items/tries across sessions for fatigue tracking
+    dig_items = 0,
+    dig_tries = 0
 };
 
 -- Display setup
@@ -221,14 +222,51 @@ local function update_pricing()
     end
 end
 
+-- Needed to move session data out of settings because of how Windower saves the settings
+local function save_session_data()
+    local filepath = ('%sdata/session_data'):format(windower.addon_path)
+    local file = io.open(filepath, "w");
+    if (file ~= nil) then
+        file:write('session\n');
+        file:write(('%s\n'):format(hxigather.dig_tries));
+        file:write(('%s\n'):format(hxigather.dig_items));
+        file:write(('%s\n'):format(hxigather.digging.dig_skillup));
+        for k, v in pairs(hxigather.rewards) do
+            file:write(('%s:%d\n'):format(k, v));
+        end
+        file:close();
+    end
+end
+
+local function load_session_data()
+    local filepath = ('%sdata/session_data'):format(windower.addon_path);
+    if (windower.file_exists(filepath)) then
+        local file = io.open(filepath, 'r');
+        if (file ~= nil) then
+            local trash = file:read();
+            hxigather.dig_tries = file:read();
+            hxigather.dig_items = file:read();
+            hxigather.digging.dig_skillup = file:read();
+            local line = file:read();
+            while (line ~= nil) do
+                local splitTable = split(line, ':');
+                hxigather.rewards[splitTable[1]] = splitTable[2];
+                line = file:read();
+            end
+            file:close();
+        end
+    end
+end
+
 local function clear()
     hxigather.is_attempt = 0;
     hxigather.last_attempt = os.time();
-    hxigather.settings.first_attempt = 0;
-    hxigather.settings.rewards = {};
-    hxigather.settings.dig_items = 0;
-    hxigather.settings.dig_tries = 0;
+    hxigather.first_attempt = 0;
+    hxigather.rewards = {};
+    hxigather.dig_items = 0;
+    hxigather.dig_tries = 0;
     hxigather.digging.dig_skillup = 0.0;
+    save_session_data();
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -240,6 +278,7 @@ end
 --]]
 windower.register_event('load', function()
     update_pricing();
+    load_session_data();
     if (hxigather.settings.reset_on_load[1]) then
         notice('Reset rewards and session stats on reload.');
         clear();
@@ -256,6 +295,7 @@ end);
 windower.register_event('unload', function()
     -- Save the current settings..
     hxigather.settings:save();
+    save_session_data();
 end);
 
 --[[
@@ -265,6 +305,7 @@ end);
 windower.register_event('logout', function()
     -- Save the current settings..
     hxigather.settings:save();
+    save_session_data();
 end);
 
 --[[
@@ -280,6 +321,7 @@ windower.register_event('addon command', function(command, ...)
     if (command:match('save')) then
         update_pricing();
         hxigather.settings:save();
+        save_session_data();
         notice('Settings saved.');
         return;
     end
@@ -339,8 +381,8 @@ windower.register_event('outgoing chunk',
             local dig_diff = os.time() - hxigather.last_attempt;
             hxigather.last_attempt = os.time();
             hxigather.settings.visible[1] = true
-            if (hxigather.settings.first_attempt == 0) then
-                hxigather.settings.first_attempt = os.time();
+            if (hxigather.first_attempt == 0) then
+                hxigather.first_attempt = os.time();
             end
             if (dig_diff > 1) then
                 hxigather.digging.dig_timing[hxigather.digging.dig_index] =
@@ -398,17 +440,14 @@ windower.register_event('incoming text',
         end
 
         if hxigather.is_attempt then
-            hxigather.settings.dig_tries = hxigather.settings.dig_tries + 1;
+            hxigather.dig_tries = hxigather.dig_tries + 1;
             if (item) then
-                item = item:gsub("%s+", "_")
-                hxigather.settings.dig_items = hxigather.settings.dig_items + 1;
+                hxigather.dig_items = hxigather.dig_items + 1;
                 if (item ~= nil) then
-                    if (hxigather.settings.rewards[item] == nil) then
-                        hxigather.settings.rewards[item] = 1;
-                    elseif (hxigather.settings.rewards[item] ~= nil) then
-                        hxigather.settings.rewards[item] = hxigather.settings
-                                                               .rewards[item] +
-                                                               1;
+                    if (hxigather.rewards[item] == nil) then
+                        hxigather.rewards[item] = 1;
+                    elseif (hxigather.rewards[item] ~= nil) then
+                        hxigather.rewards[item] = hxigather.rewards[item] + 1;
                     end
 
                     -- Log the item
@@ -435,27 +474,26 @@ windower.register_event('prerender', function()
         return;
     end
 
-    local elapsed_time = os.time() -
-                             math.floor(hxigather.settings.first_attempt);
+    local elapsed_time = os.time() - math.floor(hxigather.first_attempt);
     local total_worth = 0;
     local accuracy = 0;
     local moon_percent = info.moon;
     local moon_phase = res.moon_phases[info.moon_phase].name;
 
-    if (hxigather.settings.dig_tries ~= 0) then
-        accuracy =
-            (hxigather.settings.dig_items / hxigather.settings.dig_tries) * 100;
+    if (hxigather.dig_tries ~= 0) then
+        accuracy = (hxigather.dig_items / hxigather.dig_tries) * 100;
     end
 
     local output_text = '--------HXIGather--------';
-    output_text = output_text .. '\nAttempted Digs: ' ..
-                      hxigather.settings.dig_tries .. ' (' ..
+    output_text = output_text .. '\nAttempted Digs: ' .. hxigather.dig_tries ..
+                      ' (' ..
                       string.format('%.2f', hxigather.digging.dig_per_minute) ..
                       ' dpm)';
     output_text = output_text .. '\nGreens Cost: ' ..
-                      format_int(hxigather.settings.dig_tries *
-                                     hxigather.settings.digging.gysahl_cost[1]);
-    output_text = output_text .. '\nItems Dug: ' .. hxigather.settings.dig_items;
+                      format_int(
+                          hxigather.dig_tries *
+                              hxigather.settings.digging.gysahl_cost[1]);
+    output_text = output_text .. '\nItems Dug: ' .. hxigather.dig_items;
     output_text = output_text .. '\nDig Accuracy: ' ..
                       string.format('%.2f', accuracy) .. '%';
     output_text = output_text .. '\nWeather: ' .. res.weather[info.weather].name;
@@ -487,9 +525,8 @@ windower.register_event('prerender', function()
 
     output_text = output_text .. '\n--------------------------';
 
-    for k, v in pairs(hxigather.settings.rewards) do
+    for k, v in pairs(hxigather.rewards) do
         local itemTotal = 0;
-        k = k:gsub("_", " ");
         if (hxigather.pricing[k] ~= nil) then
             itemTotal = hxigather.pricing[k] * v;
             total_worth = total_worth + itemTotal;
@@ -504,7 +541,7 @@ windower.register_event('prerender', function()
 
     if (hxigather.settings.digging.gysahl_subtract[1]) then
         total_worth = total_worth -
-                          (hxigather.settings.dig_tries *
+                          (hxigather.dig_tries *
                               hxigather.settings.digging.gysahl_cost[1]);
         -- only update gil_per_hour every 3 seconds
         if ((os.time() % 3) == 0) then
